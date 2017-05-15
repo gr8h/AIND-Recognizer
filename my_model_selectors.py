@@ -13,8 +13,7 @@ class ModelSelector(object):
     base class for model selection (strategy design pattern)
     '''
 
-    def __init__(self, all_word_sequences: dict, all_word_Xlengths: dict, this_word: str,
-                 n_constant=3,
+    def __init__(self, all_word_sequences: dict, all_word_Xlengths: dict, this_word: str, n_constant=3,
                  min_n_components=2, max_n_components=10,
                  random_state=14, verbose=False):
         self.words = all_word_sequences
@@ -60,7 +59,6 @@ class SelectorConstant(ModelSelector):
         best_num_components = self.n_constant
         return self.base_model(best_num_components)
 
-
 class SelectorBIC(ModelSelector):
     """ select the model with the lowest Baysian Information Criterion(BIC) score
 
@@ -74,10 +72,50 @@ class SelectorBIC(ModelSelector):
 
         :return: GaussianHMM object
         """
-        warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection based on BIC scores
-        raise NotImplementedError
+        """
+        * where L is the likelihood of the fitted model, p is the number of parameters,and N is the number of data points
+        
+        Initial state occupation probabilities = num_states
+        Transition probabilities = num_states*(num_states - 1)
+        Emission probabilities = num_states*numFeatures*2 = numMeans+numCovars
+        
+        numMeans and numCovars are the number of means and covars calculated. 
+        One mean and covar for each state and features. 
+        Then the total number of parameters are:
+            Parameters = Initial state occupation probabilities + Transition probabilities + Emission probabilities
+        """
+
+        warnings.filterwarnings("ignore", category=DeprecationWarning)
+        best_selected_score = float('-inf')
+        best_selected_model = None
+        n = len(self.X)
+        num_features = self.X.shape[1]
+
+        for num_states in range(self.min_n_components, self.max_n_components + 1):
+            try:
+
+                model = self.base_model(num_states)
+                logL = model.score(self.X, self.lengths)
+                logN = np.log(n)
+
+                transition_probability = num_states * (num_states - 1)
+                emission_probability = num_states * num_features * 2
+
+                p = num_states + transition_probability + emission_probability
+
+                curr_score = -2 * logL + p * logN
+
+                if curr_score > best_selected_score:
+                    best_selected_score = curr_score
+                    best_selected_model = model
+
+            except:
+                if self.verbose:
+                    print("failure on {} with {} states".format(self.this_word, num_states))
+                pass
+
+        return best_selected_model
 
 
 class SelectorDIC(ModelSelector):
@@ -91,9 +129,38 @@ class SelectorDIC(ModelSelector):
 
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
+        best_selected_score = float('-inf')
+        best_selected_model = None
+        n = len(self.X)
 
-        # TODO implement model selection based on DIC scores
-        raise NotImplementedError
+        for num_states in range(self.min_n_components, self.max_n_components + 1):
+            try:
+                model = self.base_model(num_states)
+                logL = model.score(self.X, self.lengths)
+
+                word_scores = []
+                logL_all_but_word = 0
+
+                for word in [w for w in self.words if w != self.this_word]:
+                    word_X, word_lengths = self.hwords[word]
+                    word_score = model.score(word_X, word_lengths)
+                    word_scores.append(word_score)
+
+                if word_scores:
+                    logL_all_but_word = sum(word_scores)/len(word_scores)
+
+                curr_score = logL - logL_all_but_word
+                if curr_score > best_selected_score:
+                    best_selected_score = curr_score
+                    best_selected_model = model
+
+
+            except:
+                if self.verbose:
+                    print("failure on {} with {} states".format(self.this_word, num_states))
+                pass
+
+        return best_selected_model
 
 
 class SelectorCV(ModelSelector):
@@ -101,8 +168,50 @@ class SelectorCV(ModelSelector):
 
     '''
 
+
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection using CV
-        raise NotImplementedError
+        if len(self.sequences) < 2:
+            return None
+
+        if len(self.sequences) == 2:
+            n_splits = 2
+        else:
+            n_splits = 3
+
+        best_selected_score = float('-inf')
+        best_selected_model = None
+
+        for num_states in range(self.min_n_components, self.max_n_components + 1):
+
+            try:
+                curr_scores = []
+
+                kf = KFold(n_splits=n_splits)
+                for cv_train_index, cv_test_index in kf.split(self.sequences):
+
+                    train_X, train_lengths = combine_sequences(cv_train_index, self.sequences)
+                    test_X, test_lengths = combine_sequences(cv_test_index, self.sequences)
+
+                    model = GaussianHMM(n_components=num_states
+                                        , covariance_type="diag"
+                                        , n_iter=1000
+                                        , random_state=self.random_state
+                                        , verbose=False).fit(train_X, train_lengths)
+
+                    curr_score = model.score(test_X, test_lengths)
+                    curr_scores.append(curr_score)
+
+                avg_score = sum(curr_scores)/len(curr_scores)
+
+                if avg_score > best_selected_score:
+                        best_selected_score = avg_score
+                        best_selected_model = model
+
+            except:
+                if self.verbose:
+                    print("failure on {} with {} states".format(self.this_word, num_states))
+                pass
+
+        return best_selected_model
